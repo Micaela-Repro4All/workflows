@@ -1,15 +1,15 @@
 function emailLog() {
-    var tbu = DriveApp.getFolderById('1LdlFA_L8_i4Q-v9q0ja2lsu_dfNtcGbe');
-    var emails = GmailApp.search('is:unread label:uploads');
+    var tbu = DriveApp.getFolderById('1LdlFA_L8_i4Q-v9q0ja2lsu_dfNtcGbe'); // Folder for storing processed files
+    var emails = GmailApp.search('is:unread label:uploads'); // Retrieve unread emails with 'uploads' label
     var sheet = SpreadsheetApp.openById('17vCpedF3JLbLktr_cdmrv_U116GdTPvwqlCN6o7Nfgg').getActiveSheet();
-    var nextRow = sheet.getLastRow() + 1;
-    var data = [];
+    var nextRow = sheet.getLastRow() + 1; // Determine the next available row in the spreadsheet
+    var data = []; // Array to store email processing results
   
-    if (emails.length === 0) return;
+    if (emails.length === 0) return; // Exit if no unread emails
   
     emails.forEach(emailThread => {
-      var email = emailThread.getMessages()[0]; 
-      if (!email.isUnread()) return;
+      var email = emailThread.getMessages()[0]; // Get the first message in the thread
+      if (!email.isUnread()) return; // Skip already read emails
   
       var body = email.getPlainBody();
       var subj = email.getSubject();
@@ -17,10 +17,11 @@ function emailLog() {
       var receiver = email.getTo();
       var recd = email.getDate();
       
-      var fileDate = new Date();
+      var fileDate = new Date(); // Default file date to current date
       var source = null, des = null, amt = null, ct = null, freq = null, fy = null;
       var status = null, subtype = '', url = null, note = null;
   
+      // Identify email source and process accordingly
       if (sender.includes('engageusa')) {
         ({ source, des, freq, amt, ct, fileDate, url } = processEngageEmail(body, subj));
       } else if (sender.includes('paymentsolutions')) {
@@ -29,29 +30,31 @@ function emailLog() {
         ({ source, des, freq, fileDate } = processShopifyEmail(body, recd, sheet));
       }
   
-      if (!source) return;
+      if (!source) return; // Skip if source not identified
   
-      fy = fileDate.getFullYear();
+      fy = fileDate.getFullYear(); // Determine fiscal year
       if (fileDate.getMonth() > 8) fy++;
   
-      var fileName = `${source} ${des} ${formatDate(fileDate)}${subtype}`;
-      url = url ? `=HYPERLINK("${url}", "File")` : null;
+      var fileName = `${source} ${des} ${formatDate(fileDate)}${subtype}`; // Construct file name
+      url = url ? `=HYPERLINK("${url}", "File")` : null; // Format URL as hyperlink
       
-      email.markRead();
+      email.markRead(); // Mark email as read after processing
   
-      data.push([recd, fileName, des, amt, ct, freq, fy, note, status, url]);
+      data.push([recd, fileName, des, amt, ct, freq, fy, note, status, url]); // Store processed data
     });
   
     if (data.length > 0) {
-      sheet.getRange(nextRow, 1, data.length, 10).setValues(data);
+      sheet.getRange(nextRow, 1, data.length, 10).setValues(data); // Batch write to spreadsheet
     }
   }
   
+  // Process Engage emails
   function processEngageEmail(body, subj) {
     var source = 'Engage';
     var des = subj.includes('PAC') ? 'PAC' : 'c4';
     var freq = subj.includes('PAC') ? 'Weekly' : 'Daily';
   
+    // Extract donation amounts and donor counts
     var totLine = body.indexOf('Total Donors');
     var totStart = body.indexOf('$', totLine);
     var totEnd = body.indexOf('\r', totLine);
@@ -61,14 +64,16 @@ function emailLog() {
     var nonCt = parseInt(body.substring(totLine - 12, totLine - 4).trim());
     var ct = totCt + nonCt;
   
+    // Extract file date
     var dateMatch = body.match(/The (?:file|data) for (\d{1,2}\/\d{1,2}\/\d{4})/);
     var fileDate = dateMatch ? new Date(dateMatch[1]) : new Date();
   
-    var url = getEngageFile(fileDate, 'c4');
+    var url = getEngageFile(fileDate, 'c4'); // Generate file link
   
     return { source, des, freq, amt, ct, fileDate, url };
   }
   
+  // Process PSI emails
   function processPSIEmail(email, body, subj, sheet, tbu, recd) {
     var source = 'PSI';
     var des = 'c4';
@@ -76,12 +81,12 @@ function emailLog() {
     var subtype = '', amt = 0, ct = 0, url = null, status = 'Awaiting Upload File';
   
     if (subj.includes('Daily Reports')) {
+      // Extract donation amounts and donor counts from body
       let matches = [...body.matchAll(/(\d{2}\/\d{2}\/\d{4})\s+\d+\s+(\d+)\s+([\d,.]+)/g)];
       matches.forEach(match => {
         ct += parseInt(match[2]);
         amt += parseFloat(match[3].replace(',', ''));
       });
-  
     } else if (subj.includes('Credit Card Payment File')) {
       url = processPSICreditFile(email, sheet, tbu);
       subtype = ' One-Time';
@@ -93,35 +98,7 @@ function emailLog() {
     return { source, des, freq, amt, ct, fileDate: new Date(), subtype, status, url };
   }
   
-  function processPSICreditFile(email, sheet, tbu) {
-    var files = email.getAttachments();
-    if (!files.length) return null;
-  
-    var csvData = files.map(file => Utilities.parseCsv(file.getDataAsString())).flat();
-    var newSS = SpreadsheetApp.create('PSI c4 One-Time');
-    DriveApp.getFileById(newSS.getId()).moveTo(tbu);
-    newSS.getActiveSheet().getRange(1, 1, csvData.length, csvData[0].length).setValues(csvData);
-  
-    return newSS.getUrl();
-  }
-  
-  function processPSIPaymentFile(email, body, tbu) {
-    var fileName = body.match(/File Name:\s+(\d{6})/);
-    var dateStr = fileName ? '20' + fileName[1].replace(/(.{2})/g, "$1.") : null;
-    if (!dateStr) return null;
-  
-    var fileDate = new Date(dateStr);
-    var newSS = SpreadsheetApp.create('PSI c4 ' + formatDate(fileDate));
-    DriveApp.getFileById(newSS.getId()).moveTo(tbu);
-  
-    return newSS.getUrl();
-  }
-  
-  function processShopifyEmail(body, recd, sheet) {
-    return { source: 'Shopify', des: 'c4', freq: 'Monthly', fileDate: new Date(recd.getFullYear(), recd.getMonth() + 1, 0) };
-  }
-  
+  // Format date as MM.DD
   function formatDate(date) {
     return ('0' + (date.getMonth() + 1)).slice(-2) + '.' + ('0' + date.getDate()).slice(-2);
-  }
-  
+  }  
